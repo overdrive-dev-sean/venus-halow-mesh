@@ -1,0 +1,28 @@
+#!/bin/sh
+# Keeps DNS working when the mesh is this GX's only internet route. Supervised by daemontools, linked into
+# /service by /data/rc.local. Checks every 2 seconds.
+#
+# The local dnsmasq reads its upstream servers from /run/resolv.conf, a symlink Venus OS points at the active
+# uplink's resolver file. With no Ethernet, Wi-Fi or modem, that file has no servers, so the GX routes over the
+# mesh but cannot resolve names. When the internet route goes over halow0 and the file has no servers, this points
+# the symlink at FALLBACK_DNS and reloads dnsmasq. Venus OS repoints it when an uplink returns.
+#
+# It does NOT undo Venus OS's Wi-Fi off switch. That switch soft-blocks every Wi-Fi radio through rfkill, the HaLow
+# radio included. Unblocking the HaLow radio behind connman's back makes connman believe Wi-Fi is on again, and the
+# built-in Wi-Fi then cannot be switched back on. See the README.
+exec 2>&1
+H=/data/halow
+[ -r $H/halow.env ] && . $H/halow.env
+FB=/run/halow-resolv.conf
+while :; do
+  if [ -n "${FALLBACK_DNS-1.1.1.1 8.8.8.8}" ] && ip route get 1.1.1.1 2>/dev/null | grep -q " dev halow0 " \
+     && ! grep -q "^nameserver" /run/resolv.conf 2>/dev/null; then
+    : > $FB.new
+    for ns in ${FALLBACK_DNS-1.1.1.1 8.8.8.8}; do echo "nameserver $ns" >> $FB.new; done
+    mv $FB.new $FB
+    ln -sfn $FB /run/resolv.conf
+    [ -f /run/dnsmasq.pid ] && kill -HUP "$(cat /run/dnsmasq.pid)"
+    echo "halow: no DNS servers while routing over the mesh, using ${FALLBACK_DNS-1.1.1.1 8.8.8.8}"
+  fi
+  sleep 2
+done

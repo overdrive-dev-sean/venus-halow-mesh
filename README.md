@@ -47,7 +47,7 @@ This repo has only been tested at bench range. Measure range at your own site be
 
 ## What Venus OS needed
 
-The stock kernel loads the Morse driver's dependencies, but four things stop a working mesh.
+The stock kernel loads the Morse driver's dependencies, but five things stop a working mesh, and one has no workaround yet.
 
 1. **No mesh support in mac80211.** The kernel is built with `CONFIG_MAC80211_MESH` off, so the radio offers no
    mesh point mode. `build/build-kernel-modules.sh` rebuilds `mac80211.ko` from the matching
@@ -73,6 +73,18 @@ The stock kernel loads the Morse driver's dependencies, but four things stop a w
    Side effect: any other mac80211-based USB Wi-Fi adapter on the same GX would also be named `halow*`, and
    connman would ignore it. The Cerbo GX's built-in Wi-Fi drivers do not use mac80211.
 
+5. **No DNS when the mesh is the only uplink.** The local dnsmasq reads its servers from `/run/resolv.conf`,
+   which Venus OS points at the active uplink's resolver file. With no Ethernet, Wi-Fi or modem, that file is empty,
+   so the GX routes over the mesh but cannot resolve names. `gx/service/halow-watch` notices when the internet route
+   goes over `halow0` with no DNS servers, points the resolver at `FALLBACK_DNS` (default `1.1.1.1 8.8.8.8`), and
+   reloads dnsmasq. Venus OS repoints it when an uplink returns.
+
+**Known limitation: do not switch Wi-Fi off on a HaLow GX.** Venus OS's Wi-Fi off switch soft-blocks every Wi-Fi
+radio through rfkill, including the HaLow radio, so the mesh drops. Unblocking the HaLow radio behind connman's back
+was tried and rejected: connman then believes Wi-Fi is back on, and the built-in Wi-Fi cannot be switched on again.
+To stop using a Wi-Fi uplink, forget the network instead. If you are locked out, switch Wi-Fi on from the GX screen
+or plug in Ethernet.
+
 Victron builds kernels without module signing or `MODVERSIONS`, so modules built from the same tag load as long as
 the vermagic string matches.
 
@@ -95,6 +107,7 @@ gx/                         files that go in /data/halow on the GX
   halow-mesh.conf.example   wpa_supplicant_s1g mesh config
   service/halow-mesh/       daemontools service: mesh point
   service/halow-babel/      daemontools service: Babel on halow0
+  service/halow-watch/     daemontools service: DNS fallback when the mesh is the only uplink
 ```
 
 ## Build and install
@@ -131,6 +144,7 @@ You need Docker on the build machine and root SSH access to the GX.
    ln -s /data/halow/service/halow-mesh /service/halow-mesh
    sleep 30
    ln -s /data/halow/service/halow-babel /service/halow-babel
+   ln -s /data/halow/service/halow-watch /service/halow-watch
    ```
 
 **Country is a compliance setting.** The Morse driver's built-in default is `AU` (915 to 928 MHz). `load.sh`
@@ -153,7 +167,7 @@ Babel runs on `halow0` only. It uses the same policy as the peer nodes on our me
 ## Check it
 
 ```
-svstat /service/halow-mesh /service/halow-babel
+svstat /service/halow-mesh /service/halow-babel /service/halow-watch
 iw phy $(cat /sys/class/net/halow0/phy80211/name) info | grep -A8 'interface modes'   # expect: mesh point
 iw dev halow0 station dump | grep -E 'Station|mesh plink'                             # expect: ESTAB
 LD_LIBRARY_PATH=/data/halow/lib /data/halow/bin/morse_cli -i halow0 version
@@ -182,6 +196,8 @@ What was tested, on one Cerbo GX and one peer, at bench range (about 1 m):
 | Reboot | everything returned with no help: built-in Wi-Fi, Tailscale, driver, mesh, Babel, NAT |
 | Driver unload | the built-in Wi-Fi and Tailscale stayed up |
 | Mixed releases | a GX on Morse 2.0.0 formed a mesh with a 2.2.3 peer |
+| Mesh as the only uplink (no Wi-Fi, no Ethernet) | VRM stayed live and Tailscale worked, both over the mesh; DNS needed `halow-watch` |
+| Uplink returns | route, DNS and mesh switched back with no help |
 | Mesh pings with connman kept off the radio | 660 of 660 replies, worst 128 ms, no scans on `halow0` |
 | Mesh pings while connman managed the radio | 4-second stalls about every 14 s, up to 32% loss |
 
