@@ -13,9 +13,12 @@ fi
 ip addr replace ${BABEL_ADDR:?set BABEL_ADDR in halow.env} dev lo
 set -- -I /run/halow-babel.pid -S $H/babel.state -g 33123 -k 900
 if [ "${HALOW_EXIT:-0}" = 1 ]; then
-  set -- "$@" -C "redistribute if eth0 ip 0.0.0.0/0 eq 0 metric ${EXIT_METRIC_ETH:-128}" \
-              -C "redistribute if wifi0 ip 0.0.0.0/0 eq 0 metric ${EXIT_METRIC_WIFI:-192}" \
-              -C "redistribute if ppp0 ip 0.0.0.0/0 eq 0 metric ${EXIT_METRIC_MODEM:-1024}"
+  # Venus OS's connman (and pppd) install default routes as proto boot (3). babeld skips boot routes unless a
+  # filter names "proto 3", so each uplink gets a proto 3 line, plus a plain line for any other protocol.
+  for spec in "eth0 ${EXIT_METRIC_ETH:-128}" "wifi0 ${EXIT_METRIC_WIFI:-192}" "ppp0 ${EXIT_METRIC_MODEM:-1024}"; do
+    set -- "$@" -C "redistribute if ${spec% *} proto 3 ip 0.0.0.0/0 eq 0 metric ${spec#* }" \
+                -C "redistribute if ${spec% *} ip 0.0.0.0/0 eq 0 metric ${spec#* }"
+  done
   # NAT mesh traffic out of any non-mesh interface (idempotent).
   for net in ${NAT_NETS:-10.100.0.0/16 10.200.0.0/16}; do
     iptables -t nat -C POSTROUTING -s $net ! -o halow0 -j MASQUERADE 2>/dev/null \
