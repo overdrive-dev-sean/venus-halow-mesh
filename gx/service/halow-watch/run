@@ -10,6 +10,10 @@
 # FALLBACK_DNS into pppd's file. resolv-watch then selects it by its own rules, and nothing fights over the symlink.
 # If a modem connects, pppd overwrites the file. When the mesh stops being the route, this clears its entries.
 #
+# It also restarts the mesh and Babel services when the radio goes away or comes back (a USB reset, or a dongle
+# unplugged and plugged back in). wpa_supplicant_s1g does not exit when its interface disappears, and it does not
+# reattach to the new interface, so without this the mesh stays down until the next reboot.
+#
 # It does NOT undo Venus OS's Wi-Fi off switch. That switch soft-blocks every Wi-Fi radio through rfkill, the HaLow
 # radio included. Unblocking the HaLow radio behind connman's back makes connman believe Wi-Fi is on again, and the
 # built-in Wi-Fi then cannot be switched back on. See the README.
@@ -21,6 +25,14 @@ PPP=/run/ppp/resolv.conf
 MARK="# venus-halow-mesh fallback"
 DNS="${FALLBACK_DNS-1.1.1.1 8.8.8.8}"
 while :; do
+  if pidof wpa_supplicant_s1g >/dev/null && [ -f /run/halow-mesh.ifindex ]; then
+    now=$(cat /sys/class/net/halow0/ifindex 2>/dev/null)
+    if [ "$now" != "$(cat /run/halow-mesh.ifindex)" ]; then
+      echo "halow: radio interface ${now:+changed}${now:-is gone}, restarting the mesh and Babel"
+      rm -f /run/halow-mesh.ifindex
+      svc -t /service/halow-mesh /service/halow-babel
+    fi
+  fi
   ours=0; grep -q "^$MARK" $PPP 2>/dev/null && ours=1
   if [ -n "$DNS" ] && ip route get 1.1.1.1 2>/dev/null | grep -q " dev halow0 " \
      && ! grep -q "^nameserver" $CM 2>/dev/null && ! pidof pppd >/dev/null; then

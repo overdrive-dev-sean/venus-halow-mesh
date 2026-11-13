@@ -6,5 +6,7 @@ H=/data/halow
 $H/load.sh || { sleep 30; exit 1; }
 ip link set halow0 up
 ( sleep 5; ip addr replace ${HALOW_ADDR:?set HALOW_ADDR in halow.env} dev halow0 ) &
+# halow-watch compares this with the live interface and restarts the service if the radio went away or came back.
+cat /sys/class/net/halow0/ifindex > /run/halow-mesh.ifindex
 export LD_LIBRARY_PATH=$H/lib
 exec $H/bin/wpa_supplicant_s1g -i halow0 -c $H/halow-mesh.conf

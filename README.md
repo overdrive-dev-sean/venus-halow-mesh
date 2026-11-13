@@ -80,6 +80,8 @@ The stock kernel loads the Morse driver's dependencies, but five things stop a w
    route is on `halow0`, connman has no server and pppd is not running. resolv-watch then picks it up by its own
    rules. A modem connection overwrites the file, and the watcher clears its entries when the mesh stops being the
    route. An earlier version re-pointed the symlink itself, and resolv-watch put it back every 10 to 30 seconds.
+   The same watcher restarts the mesh and Babel services when the radio is unplugged or resets, because
+   `wpa_supplicant_s1g` neither exits nor reattaches when its interface goes away.
 
 **Known limitation: do not switch Wi-Fi off on a HaLow GX.** Venus OS's Wi-Fi off switch soft-blocks every Wi-Fi
 radio through rfkill, including the HaLow radio, so the mesh drops. Unblocking the HaLow radio behind connman's back
@@ -199,6 +201,8 @@ What was tested, on one Cerbo GX and one peer, at bench range (about 1 m):
 | Driver unload | the built-in Wi-Fi and Tailscale stayed up |
 | Mixed releases | a GX on Morse 2.0.0 formed a mesh with a 2.2.3 peer |
 | Mesh as the only uplink (Wi-Fi disconnected, Ethernet out) | VRM stayed live, Tailscale worked, fresh DNS lookups resolved through `halow-watch` |
+| Dongle unplugged and plugged back in while running | mesh and Babel back 29 s after the replug, via `halow-watch` |
+| Reboot with no dongle, then dongle plugged in | clean boot; mesh up within about 30 s of plugging in |
 | Uplink returns, Wi-Fi then Ethernet | route, DNS and mesh switched back with no help; Ethernet preferred over Wi-Fi |
 | Mesh pings with connman kept off the radio | 660 of 660 replies, worst 128 ms, no scans on `halow0` |
 | Mesh pings while connman managed the radio | 4-second stalls about every 14 s, up to 32% loss |

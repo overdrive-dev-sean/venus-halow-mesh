@@ -11,7 +11,11 @@ cp $H/zz-venus-halow.rules /run/udev/rules.d/zz-venus-halow.rules
 udevadm control --reload 2>/dev/null
 
 lsusb | grep -q "325b:" || { echo "halow: no Morse Micro radio on USB"; exit 1; }
-lsmod | grep -q "^morse " && exit 0
+# Already loaded (for example after a dongle reset or replug): just wait for the radio's interface.
+if lsmod | grep -q "^morse "; then
+  for _ in $(seq 1 30); do [ -e /sys/class/net/halow0 ] && exit 0; sleep 1; done
+  echo "halow: driver loaded but halow0 is not there"; exit 1
+fi
 
 # 2. Modules must match the running kernel exactly.
 K=$(uname -r)
