@@ -107,6 +107,8 @@ Babel runs on `halow0` only. It uses the same policy as the peer nodes on our me
 - With `HALOW_EXIT=1`, it also announces its own default routes, each at a cost per uplink type: `eth0` 128,
   `wifi0` 192, `ppp0` (LTE modem) 1024. Lower wins, so a mesh member uses LTE only when nothing else is left.
   Mesh traffic is NATed out of any non-mesh interface.
+- It accepts only member loopbacks (`10.200.0.0/16`) and a default route from peers. Any other prefix is
+  refused, so a peer cannot pull a LAN range or a cloud address onto the mesh with a more specific route.
 - Routes learned from Babel go into the kernel at metric 900, so a unit's own uplink always beats a mesh route.
   A GX that loses its own uplink falls back to the mesh.
 

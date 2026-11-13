@@ -19,7 +19,11 @@ if [ "${HALOW_EXIT:-0}" = 1 ]; then
   done
   echo 1 > /proc/sys/net/ipv4/ip_forward
 fi
-set -- "$@" -C "redistribute local ip 10.200.0.0/16 le 32 allow" -C "redistribute local deny" -C "redistribute deny" halow0
+set -- "$@" -C "redistribute local ip 10.200.0.0/16 le 32 allow" -C "redistribute local deny" -C "redistribute deny"
+# Accept only what the mesh is meant to carry: member loopbacks and a default route. Without this, a peer could
+# announce a more specific prefix (a LAN range, a cloud server /32) and pull that traffic onto the mesh, because a
+# specific route wins over this GX's own default whatever the kernel metric.
+set -- "$@" -C "in ip 10.200.0.0/16 le 32 allow" -C "in ip 0.0.0.0/0 eq 0 allow" -C "in deny" halow0
 rm -f /run/halow-babel.pid
 export LD_LIBRARY_PATH=$H/lib
 exec $H/bin/babeld "$@"
