@@ -4,3 +4,4 @@ pkg/
 *.ko
 *.config
 halow-mesh.conf
+*.log

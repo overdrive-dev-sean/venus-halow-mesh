@@ -9,6 +9,31 @@ place. The stock Venus OS kernel is not replaced. Three kernel modules are added
 
 This is a bench result from one unit, not a product. Read [Status](#status) before you rely on it.
 
+## Why you might want this
+
+Wi-Fi HaLow runs below 1 GHz (902 to 928 MHz in the US). Signals at those frequencies travel further and get through
+walls, trees and terrain better than ordinary 2.4 or 5 GHz Wi-Fi. They also work with simple omnidirectional
+antennas, so nobody has to aim a dish. A mesh adds the rest: the radios find each other, and traffic hops
+through whichever units are in range.
+
+Some ways that helps a GX owner:
+
+- **A GX far from the network.** A battery bank in a barn, a pump house, a cabin down the hill, a boat on a mooring.
+  If one HaLow radio near your router can hear one at the GX, the GX is online. There is no cable to run and no
+  point-to-point link to line up.
+- **No SIM card for every site.** Several GX devices can share one internet connection over the mesh instead of
+  each paying for LTE data.
+- **Equipment that moves.** A mesh needs no fixed infrastructure. Units join as they arrive and the routes adjust
+  as they move, which suits temporary and mobile power: events, construction, emergency response, RV parks.
+- **Any unit can be the uplink.** A GX that has its own Ethernet, Wi-Fi or LTE connection can offer it to the rest
+  of the mesh. Babel picks the cheapest working uplink, so LTE is used only when nothing else is left.
+- **One place to reach everything.** From a laptop on the mesh, or through any unit with internet, you can reach the
+  remote console, SSH and MQTT of every GX on it.
+
+We use it to centrally monitor fleets of GX devices that move between sites, without depending on LTE.
+
+This repo has only been tested at bench range. Measure range at your own site before you rely on it.
+
 ## Tested with
 
 | Item | Version |
@@ -22,7 +47,7 @@ This is a bench result from one unit, not a product. Read [Status](#status) befo
 
 ## What Venus OS needed
 
-The stock kernel loads the Morse driver's dependencies, but three things stop a working mesh.
+The stock kernel loads the Morse driver's dependencies, but four things stop a working mesh.
 
 1. **No mesh support in mac80211.** The kernel is built with `CONFIG_MAC80211_MESH` off, so the radio offers no
    mesh point mode. `build/build-kernel-modules.sh` rebuilds `mac80211.ko` from the matching
@@ -36,6 +61,17 @@ The stock kernel loads the Morse driver's dependencies, but three things stop a 
    `tailscale0` down. This looks like a kernel hang from the outside, but it is not. `gx/zz-venus-halow.rules`
    fixes it. It sorts after `wlan.rules` and replaces the `RUN` list for vendor `325b` on add and on remove.
    It also names the radio `halow0`. udev refuses to rewrite `DEVTYPE`, which was the first thing tried.
+
+4. **connman claims the radio and Venus OS's wpa_supplicant scans it.** mac80211 creates a radio's first
+   interface as `wlan0`, and connman sees it before udev can rename it. connman then hands it to Venus OS's own
+   `wpa_supplicant`, which runs a scheduled scan on it about every 14 seconds. Each scan stops mesh traffic for
+   about 4 seconds, so pings show 4-second stalls and some loss. Two changes fix it.
+   `build/build-kernel-modules.sh` patches the rebuilt mac80211 to name a radio's first interface `halow%d`
+   instead of `wlan%d`. `gx/connman-ignore-halow.sh` runs from `/data/rcS.local`, before connman starts, and adds
+   `halow` to connman's `NetworkInterfaceBlacklist`. `/etc` is read-only, so it bind-mounts an edited copy from
+   `/run`. The Morse driver's own `wlan%d` (in `wiphy.c`) is on its cfg80211-only path and is not used here.
+   Side effect: any other mac80211-based USB Wi-Fi adapter on the same GX would also be named `halow*`, and
+   connman would ignore it. The Cerbo GX's built-in Wi-Fi drivers do not use mac80211.
 
 Victron builds kernels without module signing or `MODVERSIONS`, so modules built from the same tag load as long as
 the vermagic string matches.
@@ -53,6 +89,7 @@ build/
   install.sh                copies a package to a GX over SSH and adds the boot hook
 gx/                         files that go in /data/halow on the GX
   load.sh                   loads the stack (idempotent), installs the udev rule first
+  connman-ignore-halow.sh   keeps connman off the radio (run from /data/rcS.local)
   zz-venus-halow.rules      the udev fix above
   halow.env.example         country, driver options, addresses, exit costs
   halow-mesh.conf.example   wpa_supplicant_s1g mesh config
@@ -107,8 +144,9 @@ Babel runs on `halow0` only. It uses the same policy as the peer nodes on our me
 - With `HALOW_EXIT=1`, it also announces its own default routes, each at a cost per uplink type: `eth0` 128,
   `wifi0` 192, `ppp0` (LTE modem) 1024. Lower wins, so a mesh member uses LTE only when nothing else is left.
   Mesh traffic is NATed out of any non-mesh interface.
-- It accepts only member loopbacks (`10.200.0.0/16`) and a default route from peers. Any other prefix is
+- It accepts only member loopbacks (`LOOPBACK_PREFIX`, default `10.200.0.0/16`) and a default route from peers. Any other prefix is
   refused, so a peer cannot pull a LAN range or a cloud address onto the mesh with a more specific route.
+  The prefixes are `LOOPBACK_PREFIX` and `NAT_NETS` in `halow.env`.
 - Routes learned from Babel go into the kernel at metric 900, so a unit's own uplink always beats a mesh route.
   A GX that loses its own uplink falls back to the mesh.
 
@@ -138,20 +176,25 @@ What was tested, on one Cerbo GX and one peer, at bench range (about 1 m):
 | Reboot | everything returned with no help: built-in Wi-Fi, Tailscale, driver, mesh, Babel, NAT |
 | Driver unload | the built-in Wi-Fi and Tailscale stayed up |
 | Mixed releases | a GX on Morse 2.0.0 formed a mesh with a 2.2.3 peer |
+| Mesh pings with connman kept off the radio | 660 of 660 replies, worst 128 ms, no scans on `halow0` |
+| Mesh pings while connman managed the radio | 4-second stalls about every 14 s, up to 32% loss |
 
 Not tested yet:
 
 - **Range.** All results are at bench distance.
-- **Power save.** With the driver default (`enable_ps=2`, fully enabled), ping delay spiked to 4.2 s. With it off on
-  the GX only, one run showed a worst case of 126 ms, but a later run averaged 936 ms with the peer still in power
-  save. The comparison with power save off on both ends is not finished. `halow.env.example` sets `enable_ps=0`
-  on the GX. 802.11 power save cannot be changed at runtime (`iw ... set power_save off` returns
-  `Operation not supported`), so the driver option is the only switch.
 - **A Venus OS update that changes the kernel.** The modules are stamped for one kernel release. `load.sh` then
   refuses to load them and the GX runs on without HaLow, but this path has not been exercised. Rebuild for the new
   release.
 - **Ekrano GX and other GX models.** Only the Cerbo GX was tested. The build is armv7 only.
 - **More than two mesh members.**
+
+## Power save
+
+`halow.env.example` sets `enable_ps=0`, which turns off the driver's power save (its build default is `2`, fully
+enabled). All the clean results above ran with it off on both ends. Its effect on its own is not measured yet:
+early tests that seemed to show it causing the stalls were really showing connman's scans. 802.11 power save
+cannot be changed at runtime (`iw dev halow0 set power_save off` returns `Operation not supported`), so the
+module option is the only switch.
 
 ## Sources and licenses
 

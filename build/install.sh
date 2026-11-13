@@ -20,6 +20,13 @@ HAVE=$("${SSH[@]}" uname -r)
 scp -q -r -o BatchMode=yes "$PKG/." "root@$GX:/data/halow.new/"
 "${SSH[@]}" 'umask 077; cat > /data/halow.new/halow-mesh.conf' < "$CONF"
 "${SSH[@]}" 'set -e
+# Stop running services before swapping the tree: daemontools keeps its supervise state inside the service
+# directory, so moving it under a running supervisor would orphan the processes.
+for s in halow-babel halow-mesh; do
+  if [ -e /service/$s ]; then svc -dx /service/$s /service/$s/log 2>/dev/null || true; rm -f /service/$s; fi
+done
+sleep 3
+for p in $(pidof wpa_supplicant_s1g babeld 2>/dev/null); do kill $p 2>/dev/null || true; done
 [ -f /data/halow/halow.env ] && cp /data/halow/halow.env /data/halow.new/halow.env
 [ -f /data/halow.new/halow.env ] || cp /data/halow.new/halow.env.example /data/halow.new/halow.env
 chmod 600 /data/halow.new/halow-mesh.conf
@@ -27,6 +34,9 @@ chmod 600 /data/halow.new/halow-mesh.conf
 mv /data/halow.new /data/halow
 [ -f /data/rc.local ] || printf "#!/bin/sh\nexit 0\n" > /data/rc.local
 chmod 755 /data/rc.local
+[ -f /data/rcS.local ] || printf "#!/bin/sh\nexit 0\n" > /data/rcS.local
+chmod 755 /data/rcS.local
+grep -q connman-ignore-halow /data/rcS.local || sed -i "s|^exit 0|# HaLow: keep connman away from the radio, before connman starts (venus-halow-mesh)\n/data/halow/connman-ignore-halow.sh\nexit 0|" /data/rcS.local
 grep -q /service/halow-mesh /data/rc.local || sed -i "s|^exit 0|# HaLow mesh + Babel (venus-halow-mesh)\n[ -e /service/halow-mesh ] \|\| ln -s /data/halow/service/halow-mesh /service/halow-mesh\n[ -e /service/halow-babel ] \|\| ln -s /data/halow/service/halow-babel /service/halow-babel\nexit 0|" /data/rc.local
 echo "install: done. Edit /data/halow/halow.env (addresses, exit costs), then start:"
 echo "  ln -s /data/halow/service/halow-mesh /service/halow-mesh; sleep 30; ln -s /data/halow/service/halow-babel /service/halow-babel"'

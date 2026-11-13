@@ -15,6 +15,7 @@
 #   mac80211.ko   The Venus kernel has CONFIG_MAC80211_MESH off. Without it the radio offers no mesh point mode.
 #                 This rebuilds mac80211 from the same Victron kernel tag with mesh on. On a Cerbo GX nothing
 #                 else uses mac80211 (the built-in Wi-Fi drivers are cfg80211-only), so swapping it is contained.
+#                 Patched to name a radio's first interface halow%d instead of wlan%d (see below).
 #   morse.ko      The Morse Micro driver, built against that same tree. From 2.2.x it includes dot11ah.
 #
 # Victron builds kernels with module signing and MODVERSIONS off, so only the vermagic string has to match.
@@ -48,6 +49,12 @@ M="make -s ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- LOCALVERSION="
 \$M olddefconfig
 [ "\$(\$M kernelrelease)" = "$KREL" ] || { echo "kernelrelease \$(\$M kernelrelease) != $KREL"; exit 3; }
 grep -q "^CONFIG_MAC80211_MESH=y" .config || { echo "CONFIG_MAC80211_MESH did not stick"; exit 4; }
+# mac80211 creates a radio's first interface as "wlan%d" (net/mac80211/main.c). connman sees that name before
+# udev can rename it, claims the radio as ordinary Wi-Fi, and Venus OS's wpa_supplicant then scans it. This
+# mac80211 serves only the HaLow radio, so name the first interface halow%d instead, which connman ignores once
+# gx/connman-ignore-halow.sh has added "halow" to its blacklist.
+[ "\$(grep -c '"wlan%d"' net/mac80211/main.c)" = 1 ] || { echo "net/mac80211/main.c: expected exactly one \"wlan%d\""; exit 6; }
+sed -i 's/"wlan%d"/"halow%d"/' net/mac80211/main.c
 \$M -j"\$(nproc)" modules_prepare
 \$M -j"\$(nproc)" KBUILD_MODPOST_WARN=1 lib/crc7.ko net/mac80211/mac80211.ko
 mkdir -p /work/out

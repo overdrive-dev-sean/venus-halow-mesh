@@ -24,5 +24,5 @@ git clone -q --depth 1 --branch "$FIRMWARE_REF" https://github.com/MorseMicro/mo
 find "$FW/fw/bcf" "$FW/fw/firmware" -name '*.bin' -exec cp {} "$PKG/firmware/morse/" \;
 cp "$FW/fw/LICENSE" "$PKG/firmware/morse/LICENSE.morse-firmware"
 cp -r "$HERE/gx/." "$PKG/"
-chmod 755 "$PKG/load.sh" "$PKG"/service/*/run "$PKG"/service/*/log/run "$PKG"/bin/*
+chmod 755 "$PKG/load.sh" "$PKG/connman-ignore-halow.sh" "$PKG"/service/*/run "$PKG"/service/*/log/run "$PKG"/bin/*
 echo "package: $(find "$PKG" -type f | wc -l) files, $(du -sh "$PKG" | cut -f1) in $PKG"
