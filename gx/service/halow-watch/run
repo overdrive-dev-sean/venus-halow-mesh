@@ -2,10 +2,13 @@
 # Keeps DNS working when the mesh is this GX's only internet route. Supervised by daemontools, linked into
 # /service by /data/rc.local. Checks every 2 seconds.
 #
-# The local dnsmasq reads its upstream servers from /run/resolv.conf, a symlink Venus OS points at the active
-# uplink's resolver file. With no Ethernet, Wi-Fi or modem, that file has no servers, so the GX routes over the
-# mesh but cannot resolve names. When the internet route goes over halow0 and the file has no servers, this points
-# the symlink at FALLBACK_DNS and reloads dnsmasq. Venus OS repoints it when an uplink returns.
+# Venus OS's /usr/sbin/resolv-watch points /run/resolv.conf (read by the local dnsmasq) at connman's resolver file
+# when it has a server, otherwise at pppd's (/run/ppp/resolv.conf), and re-points it every 10 to 30 seconds. With
+# no Ethernet, Wi-Fi or modem, both files are empty, so the GX routes over the mesh but cannot resolve names.
+#
+# So, while the internet route goes over halow0, connman has no server and pppd is not running, this writes
+# FALLBACK_DNS into pppd's file. resolv-watch then selects it by its own rules, and nothing fights over the symlink.
+# If a modem connects, pppd overwrites the file. When the mesh stops being the route, this clears its entries.
 #
 # It does NOT undo Venus OS's Wi-Fi off switch. That switch soft-blocks every Wi-Fi radio through rfkill, the HaLow
 # radio included. Unblocking the HaLow radio behind connman's back makes connman believe Wi-Fi is on again, and the
@@ -13,16 +16,21 @@
 exec 2>&1
 H=/data/halow
 [ -r $H/halow.env ] && . $H/halow.env
-FB=/run/halow-resolv.conf
+CM=/run/connman/resolv.conf
+PPP=/run/ppp/resolv.conf
+MARK="# venus-halow-mesh fallback"
+DNS="${FALLBACK_DNS-1.1.1.1 8.8.8.8}"
 while :; do
-  if [ -n "${FALLBACK_DNS-1.1.1.1 8.8.8.8}" ] && ip route get 1.1.1.1 2>/dev/null | grep -q " dev halow0 " \
-     && ! grep -q "^nameserver" /run/resolv.conf 2>/dev/null; then
-    : > $FB.new
-    for ns in ${FALLBACK_DNS-1.1.1.1 8.8.8.8}; do echo "nameserver $ns" >> $FB.new; done
-    mv $FB.new $FB
-    ln -sfn $FB /run/resolv.conf
-    [ -f /run/dnsmasq.pid ] && kill -HUP "$(cat /run/dnsmasq.pid)"
-    echo "halow: no DNS servers while routing over the mesh, using ${FALLBACK_DNS-1.1.1.1 8.8.8.8}"
+  ours=0; grep -q "^$MARK" $PPP 2>/dev/null && ours=1
+  if [ -n "$DNS" ] && ip route get 1.1.1.1 2>/dev/null | grep -q " dev halow0 " \
+     && ! grep -q "^nameserver" $CM 2>/dev/null && ! pidof pppd >/dev/null; then
+    if [ $ours = 0 ] && ! grep -q "^nameserver" $PPP 2>/dev/null; then
+      { echo "$MARK"; for ns in $DNS; do echo "nameserver $ns"; done; } > $PPP.new && mv $PPP.new $PPP
+      echo "halow: no DNS servers while routing over the mesh, offering $DNS through $PPP"
+    fi
+  elif [ $ours = 1 ] && ! pidof pppd >/dev/null; then
+    : > $PPP.new && mv $PPP.new $PPP
+    echo "halow: mesh is no longer the only route, removed the fallback DNS servers"
   fi
   sleep 2
 done

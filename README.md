@@ -73,11 +73,13 @@ The stock kernel loads the Morse driver's dependencies, but five things stop a w
    Side effect: any other mac80211-based USB Wi-Fi adapter on the same GX would also be named `halow*`, and
    connman would ignore it. The Cerbo GX's built-in Wi-Fi drivers do not use mac80211.
 
-5. **No DNS when the mesh is the only uplink.** The local dnsmasq reads its servers from `/run/resolv.conf`,
-   which Venus OS points at the active uplink's resolver file. With no Ethernet, Wi-Fi or modem, that file is empty,
-   so the GX routes over the mesh but cannot resolve names. `gx/service/halow-watch` notices when the internet route
-   goes over `halow0` with no DNS servers, points the resolver at `FALLBACK_DNS` (default `1.1.1.1 8.8.8.8`), and
-   reloads dnsmasq. Venus OS repoints it when an uplink returns.
+5. **No DNS when the mesh is the only uplink.** Venus OS's `/usr/sbin/resolv-watch` points the local dnsmasq at
+   connman's resolver file when it has a server, otherwise at pppd's (`/run/ppp/resolv.conf`). With no Ethernet,
+   Wi-Fi or modem, both are empty, so the GX routes over the mesh but cannot resolve names.
+   `gx/service/halow-watch` writes `FALLBACK_DNS` (default `1.1.1.1 8.8.8.8`) into pppd's file while the internet
+   route is on `halow0`, connman has no server and pppd is not running. resolv-watch then picks it up by its own
+   rules. A modem connection overwrites the file, and the watcher clears its entries when the mesh stops being the
+   route. An earlier version re-pointed the symlink itself, and resolv-watch put it back every 10 to 30 seconds.
 
 **Known limitation: do not switch Wi-Fi off on a HaLow GX.** Venus OS's Wi-Fi off switch soft-blocks every Wi-Fi
 radio through rfkill, including the HaLow radio, so the mesh drops. Unblocking the HaLow radio behind connman's back
@@ -196,8 +198,8 @@ What was tested, on one Cerbo GX and one peer, at bench range (about 1 m):
 | Reboot | everything returned with no help: built-in Wi-Fi, Tailscale, driver, mesh, Babel, NAT |
 | Driver unload | the built-in Wi-Fi and Tailscale stayed up |
 | Mixed releases | a GX on Morse 2.0.0 formed a mesh with a 2.2.3 peer |
-| Mesh as the only uplink (no Wi-Fi, no Ethernet) | VRM stayed live and Tailscale worked, both over the mesh; DNS needed `halow-watch` |
-| Uplink returns | route, DNS and mesh switched back with no help |
+| Mesh as the only uplink (Wi-Fi disconnected, Ethernet out) | VRM stayed live, Tailscale worked, fresh DNS lookups resolved through `halow-watch` |
+| Uplink returns, Wi-Fi then Ethernet | route, DNS and mesh switched back with no help; Ethernet preferred over Wi-Fi |
 | Mesh pings with connman kept off the radio | 660 of 660 replies, worst 128 ms, no scans on `halow0` |
 | Mesh pings while connman managed the radio | 4-second stalls about every 14 s, up to 32% loss |
 
