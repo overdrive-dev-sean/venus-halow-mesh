@@ -162,6 +162,12 @@ cat /sys/module/morse/parameters/country
 udevadm test --action=add /sys/class/net/halow0 2>&1 | grep -E '^RUN|run:'           # expect: only /bin/true runs
 ```
 
+## Tailscale
+
+Tailscale, if you run it on the GX, keeps working alongside this setup, which was tested with it installed.
+Without the connman fix, the network-manager restart Venus OS performs when a new radio appears also takes
+`tailscale0` down.
+
 ## Status
 
 What was tested, on one Cerbo GX and one peer, at bench range (about 1 m):
@@ -198,7 +204,7 @@ module option is the only switch.
 
 ## Sources and licenses
 
-The repo holds scripts only. The build fetches everything else at build time:
+The scripts in this repo are MIT licensed (see `LICENSE`). The repo holds scripts only. The build fetches everything else at build time:
 
 - Victron kernel: [victronenergy/linux](https://github.com/victronenergy/linux), GPL-2.0
 - Morse Micro driver, hostap fork, morse_cli, firmware: [github.com/MorseMicro](https://github.com/MorseMicro).
@@ -206,3 +212,8 @@ The repo holds scripts only. The build fetches everything else at build time:
 - babeld: Debian's `babeld` package ([jech/babeld](https://github.com/jech/babeld))
 
 No binaries are committed.
+
+## How this was made
+
+The scripts and this README were written with an AI coding assistant (Claude). Every result in
+[Status](#status) was measured on real hardware: a Cerbo GX and a HaLow peer on the bench.
