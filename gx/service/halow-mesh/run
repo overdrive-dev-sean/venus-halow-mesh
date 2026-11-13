@@ -3,7 +3,16 @@
 exec 2>&1
 H=/data/halow
 [ -r $H/halow.env ] && . $H/halow.env
-$H/load.sh || { sleep 30; exit 1; }
+# Wait here for the radio instead of exiting and being restarted, and log only when the message changes, so a
+# GX with no dongle logs one line, not one every few seconds.
+last=""
+until out=$($H/load.sh 2>&1); do
+  [ "$out" != "$last" ] && echo "$out"
+  last=$out
+  sleep 5
+done
+[ -n "$out" ] && echo "$out"
+[ -n "$last" ] && echo "halow: radio found"
 ip link set halow0 up
 ( sleep 5; ip addr replace ${HALOW_ADDR:?set HALOW_ADDR in halow.env} dev halow0 ) &
 # halow-watch compares this with the live interface and restarts the service if the radio went away or came back.

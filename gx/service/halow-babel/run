@@ -5,7 +5,11 @@
 exec 2>&1
 H=/data/halow
 [ -r $H/halow.env ] && . $H/halow.env
-[ -e /sys/class/net/halow0 ] || { sleep 10; exit 1; }
+if [ ! -e /sys/class/net/halow0 ]; then
+  echo "halow: waiting for the HaLow radio"
+  until [ -e /sys/class/net/halow0 ]; do sleep 5; done
+  echo "halow: radio found"
+fi
 ip addr replace ${BABEL_ADDR:?set BABEL_ADDR in halow.env} dev lo
 set -- -I /run/halow-babel.pid -S $H/babel.state -g 33123 -k 900
 if [ "${HALOW_EXIT:-0}" = 1 ]; then
