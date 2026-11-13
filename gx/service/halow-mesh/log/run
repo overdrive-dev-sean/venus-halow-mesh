@@ -1,0 +1,2 @@
+#!/bin/sh
+exec multilog t s100000 n4 /var/log/halow-mesh

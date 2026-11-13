@@ -1,0 +1,24 @@
+# wpa_supplicant_s1g config for an 802.11s mesh point. Every member of the mesh needs the same ssid,
+# channel and sae_password. install.sh copies your copy of this to /data/halow/halow-mesh.conf (mode 0600).
+#
+# Several lines below are required by the S1G build and fail with unhelpful messages when missing.
+ctrl_interface=/run/wpa_supplicant_s1g
+ctrl_interface_group=0
+country=US
+user_mpm=1
+# Global. The S1G build refuses any mesh join unless this is exactly 1.
+dtim_period=1
+network={
+	ssid="my-halow-mesh"
+	mode=5
+	# Must be in the network block, or init fails with "Min beacon gap 10 must be less than beacon interval 0".
+	beacon_int=100
+	# US channel 26 = 915 MHz, 2 MHz wide, global operating class 69.
+	channel=26
+	op_class=69
+	# The default (3) is valid only for 8 MHz. 0 is valid for every width.
+	s1g_prim_1mhz_chan_index=0
+	key_mgmt=SAE
+	sae_password=CHANGE-ME
+	ieee80211w=2
+}

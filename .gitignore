@@ -1,0 +1,6 @@
+# Build outputs and anything with a secret in it
+out/
+pkg/
+*.ko
+*.config
+halow-mesh.conf

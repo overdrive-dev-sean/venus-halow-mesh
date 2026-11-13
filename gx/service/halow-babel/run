@@ -1,0 +1,25 @@
+#!/bin/sh
+# Babel routing over halow0 only, supervised by daemontools.
+# This GX announces its loopback address and, when HALOW_EXIT=1, its own default routes at a cost per uplink
+# type. Routes it learns go into the kernel at metric 900, so its own Ethernet, Wi-Fi or modem default wins.
+exec 2>&1
+H=/data/halow
+[ -r $H/halow.env ] && . $H/halow.env
+[ -e /sys/class/net/halow0 ] || { sleep 10; exit 1; }
+ip addr replace ${BABEL_ADDR:?set BABEL_ADDR in halow.env} dev lo
+set -- -I /run/halow-babel.pid -S $H/babel.state -g 33123 -k 900
+if [ "${HALOW_EXIT:-0}" = 1 ]; then
+  set -- "$@" -C "redistribute if eth0 ip 0.0.0.0/0 eq 0 metric ${EXIT_METRIC_ETH:-128}" \
+              -C "redistribute if wifi0 ip 0.0.0.0/0 eq 0 metric ${EXIT_METRIC_WIFI:-192}" \
+              -C "redistribute if ppp0 ip 0.0.0.0/0 eq 0 metric ${EXIT_METRIC_MODEM:-1024}"
+  # NAT mesh traffic out of any non-mesh interface (idempotent).
+  for net in 10.100.0.0/16 10.200.0.0/16; do
+    iptables -t nat -C POSTROUTING -s $net ! -o halow0 -j MASQUERADE 2>/dev/null \
+      || iptables -t nat -A POSTROUTING -s $net ! -o halow0 -j MASQUERADE
+  done
+  echo 1 > /proc/sys/net/ipv4/ip_forward
+fi
+set -- "$@" -C "redistribute local ip 10.200.0.0/16 le 32 allow" -C "redistribute local deny" -C "redistribute deny" halow0
+rm -f /run/halow-babel.pid
+export LD_LIBRARY_PATH=$H/lib
+exec $H/bin/babeld "$@"

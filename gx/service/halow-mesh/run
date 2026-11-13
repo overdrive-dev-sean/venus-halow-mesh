@@ -1,0 +1,10 @@
+#!/bin/sh
+# HaLow 802.11s mesh point, supervised by daemontools. /data/rc.local links this directory into /service at boot.
+exec 2>&1
+H=/data/halow
+[ -r $H/halow.env ] && . $H/halow.env
+$H/load.sh || { sleep 30; exit 1; }
+ip link set halow0 up
+( sleep 5; ip addr replace ${HALOW_ADDR:?set HALOW_ADDR in halow.env} dev halow0 ) &
+export LD_LIBRARY_PATH=$H/lib
+exec $H/bin/wpa_supplicant_s1g -i halow0 -c $H/halow-mesh.conf

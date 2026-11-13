@@ -1,0 +1,11 @@
+# Morse Micro HaLow USB radio (USB vendor 325b). load.sh copies this to /run/udev/rules.d at every load.
+#
+# Why: Venus OS's /etc/udev/rules.d/wlan.rules treats any USB Wi-Fi that is not the built-in adapter as an
+# external Wi-Fi replacement. Its wlan-update script then renames the built-in wifi0 to disabled-wifi0 and kills
+# connmand. The GX drops off Wi-Fi, and the connman restart also takes tailscale0 down if Tailscale is installed.
+#
+# udev cannot rewrite DEVTYPE ("invalid ENV attribute, 'DEVTYPE' can not be set"), so this file sorts after
+# wlan.rules (zz-) and replaces the RUN list for this radio, on add and on remove. It also names it halow0.
+# Check with: udevadm test --action=add /sys/class/net/halow0   (and --action=remove)
+ACTION=="add|remove", SUBSYSTEM=="net", ENV{ID_VENDOR_ID}=="325b", RUN="/bin/true"
+ACTION=="add", SUBSYSTEM=="net", ENV{ID_VENDOR_ID}=="325b", NAME="halow0"
