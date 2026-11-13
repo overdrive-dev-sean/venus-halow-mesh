@@ -1,0 +1,135 @@
+#!/bin/sh
+# Uplink guard: tests each of this GX's own uplinks and acts on the result. Supervised by daemontools.
+#
+# Venus OS (connman) keeps one default route, on the first connected of Ethernet, Wi-Fi, modem, and never tests
+# it. A cable into a router whose own internet is down still counts as "connected", so the GX stays on it. On a
+# mesh that is worse than a dead link: if that router is a mesh member, the GX would offer the member its own
+# dead uplink back, and traffic would loop between them.
+#
+# Every cycle this service:
+#   1. Probes each uplink through its own routing table (ping, then a TCP connect for networks that drop ping).
+#      Down after 3 failures in a row, up after 3 passes in a row. An uplink that was down waits HOLD seconds
+#      after it comes back.
+#   2. Picks the cheapest healthy uplink (costs from halow.env).
+#   3. Own traffic: puts that uplink's default route in table 220, which is looked up before connman's default.
+#      With no healthy uplink it copies the default route Babel learned, so the mesh beats a dead cable.
+#      It also re-points the DNS server host routes connman pinned to a dead uplink.
+#   4. Mesh: when HALOW_EXIT=1, puts the same route in table 210 with the protocol number of its uplink.
+#      babeld redistributes only that table, so the mesh is offered an uplink only while it passes the probe.
+#
+# The probe targets are never forwarded for the mesh (FORWARD drop on halow0). Without that, a probe sent into a
+# mesh member with a dead uplink would come back over the radio, leave through this GX's other uplink, and pass.
+#
+# If this service stops, it removes its rules and tables: the GX routes as stock Venus OS and offers no exit.
+exec 2>&1
+H=/data/halow
+[ -r $H/halow.env ] && . $H/halow.env
+TARGETS="${PROBE_TARGETS:-1.0.0.1 8.8.4.4}"
+HOLD="${EXIT_HOLD_SECONDS:-20}"
+T_EXPORT=210; T_PIN=219; T_OWN=220
+TS_MARK=0x80000/0xff0000   # Tailscale marks its own packets and looks up only the main table for them
+# interface:probe-table:route-protocol:cost
+UPLINKS=$(printf '%s\n' "eth0:201:200:${EXIT_METRIC_ETH:-256}" "wifi0:202:203:${EXIT_METRIC_WIFI:-512}" \
+                        "ppp0:203:202:${EXIT_METRIC_MODEM:-4096}" | sort -t: -k4 -n)
+
+cleanup() {
+  for p in 1001 1002 1003 1004 1005 1006 5203 5204 5205 31999 32000 32001; do while ip rule del priority $p 2>/dev/null; do :; done; done
+  for t in 201 202 203 $T_EXPORT $T_PIN $T_OWN; do ip route flush table $t 2>/dev/null; done
+  for t in $TARGETS; do while iptables -D FORWARD -i halow0 -d $t -j DROP 2>/dev/null; do :; done; done
+}
+trap 'cleanup; exit 0' TERM INT
+cleanup
+# A probe socket is bound to its uplink. For it, on-link routes come from the main table as usual, and only the
+# default comes from that uplink's own table.
+n=1000
+for u in $UPLINKS; do
+  n=$((n+1)); ip rule add priority $n oif ${u%%:*} lookup main suppress_prefixlength 0
+  n=$((n+1)); ip rule add priority $n oif ${u%%:*} lookup $(echo $u | cut -d: -f2)
+done
+ip rule add priority 5203 fwmark $TS_MARK lookup $T_PIN
+ip rule add priority 5204 fwmark $TS_MARK lookup main suppress_prefixlength 0
+ip rule add priority 5205 fwmark $TS_MARK lookup $T_OWN
+ip rule add priority 31999 lookup $T_PIN
+ip rule add priority 32000 lookup main suppress_prefixlength 0
+ip rule add priority 32001 lookup $T_OWN
+for t in $TARGETS; do iptables -I FORWARD 1 -i halow0 -d $t -j DROP; done
+
+# The gateway of an uplink. connman installs a default route only for its preferred service, so for the others
+# this reads the gateway from the host routes connman adds toward that service's DNS servers, then asks connman.
+gw_of() {
+  [ "$1" = ppp0 ] && { echo link; return; }
+  g=$(ip -4 route show default dev $1 2>/dev/null | awk '$2=="via"{print $3; exit}')
+  [ -n "$g" ] || g=$(ip -4 route show dev $1 2>/dev/null | awk '$2=="via"{print $3; exit}')
+  [ -n "$g" ] || g=$(for s in $(connmanctl services 2>/dev/null | awk '{print $NF}'); do
+        connmanctl services "$s" 2>/dev/null | awk -v i="Interface=$1," '/Ethernet = /{ok=index($0,i)}
+          /^ *IPv4 = /{if(ok && match($0,/Gateway=[0-9.]+/)) print substr($0,RSTART+8,RLENGTH-8)}'; done | head -n 1)
+  echo "$g"
+}
+route_to() { [ "$2" = link ] && echo "default dev $1" || echo "default via $2 dev $1"; }
+probe() {
+  for t in $TARGETS; do ping -I $1 -c 1 -W 1 $t >/dev/null 2>&1 && return 0; done
+  for t in $TARGETS; do curl --interface $1 -k -s -o /dev/null --connect-timeout 2 -m 3 https://$t/ 2>/dev/null && return 0; done
+  return 1
+}
+
+mkdir -p /run/halow-exit
+last=""
+echo "halow-exit: started, probing $(echo $UPLINKS | sed 's/:[0-9]*:[0-9]*:/ at cost /g') toward $TARGETS"
+while :; do
+  # Probe every usable uplink at the same time, so a dead one does not slow the cycle for the others.
+  for u in $UPLINKS; do
+    i=${u%%:*}; t=$(echo $u | cut -d: -f2); rm -f /run/halow-exit/$i.ok
+    g=""; ip -4 -o addr show dev $i scope global 2>/dev/null | grep -q inet && g=$(gw_of $i)
+    eval "gw_$i=\$g"
+    [ -n "$g" ] || { ip route flush table $t 2>/dev/null; continue; }
+    ip route replace $(route_to $i $g) table $t
+    ( probe $i && : > /run/halow-exit/$i.ok ) &
+  done
+  wait
+  now=$(cut -d. -f1 /proc/uptime); best=""; summary=""
+  for u in $UPLINKS; do
+    i=${u%%:*}
+    eval "g=\$gw_$i; st=\${st_$i:-unknown}; ok=\${ok_$i:-0}; bad=\${bad_$i:-0}; hold=\${hold_$i:-0}"
+    if [ -z "$g" ]; then st=absent; ok=0; bad=0; hold=0
+    elif [ -e /run/halow-exit/$i.ok ]; then
+      ok=$((ok+1)); bad=0
+      if [ $st != up ] && [ $ok -ge 3 ]; then
+        [ $st = down ] && hold=$((now+HOLD))
+        st=up; echo "halow-exit: $i passes the probe (gateway $g)"
+      fi
+    else
+      bad=$((bad+1)); ok=0
+      if [ $st != down ] && [ $bad -ge 3 ]; then st=down; echo "halow-exit: $i fails the probe (gateway $g), not using or offering it"; fi
+    fi
+    eval "st_$i=$st; ok_$i=$ok; bad_$i=$bad; hold_$i=$hold"
+    summary="$summary $i=$st"
+    [ -z "$best" ] && [ $st = up ] && [ $now -ge $hold ] && best=$u
+  done
+  if [ -n "$best" ]; then
+    i=${best%%:*}; eval "g=\$gw_$i"; own="$(route_to $i $g)"; choice="own traffic and mesh exit on $i"
+  else
+    # No healthy uplink of our own: follow the default route Babel learned, if there is one.
+    own=$(ip -4 route show default proto babel 2>/dev/null | awk '$2=="via"{print "default via "$3" dev "$5" onlink"; exit}')
+    choice="${own:+no healthy uplink, own traffic over the mesh}"; choice="${choice:-no healthy uplink and no mesh route, routing as stock}"
+  fi
+  if [ -n "$own" ]; then ip route replace $own table $T_OWN; else ip route flush table $T_OWN 2>/dev/null; fi
+  # connman pins each service's DNS servers to that service's gateway with host routes. For an uplink that is
+  # down, re-point those hosts at the route chosen above, or DNS keeps going down the dead uplink.
+  ip route flush table $T_PIN 2>/dev/null
+  if [ -n "$own" ]; then
+    for u in $UPLINKS; do
+      i=${u%%:*}; eval "st=\$st_$i"; [ "$st" = down ] || continue
+      for h in $(ip -4 route show dev $i 2>/dev/null | awk '$2=="via" && $1!="default"{print $1}'); do
+        ip route replace $h ${own#default } table $T_PIN
+      done
+    done
+  fi
+  if [ -n "$best" ] && [ "${HALOW_EXIT:-0}" = 1 ]; then
+    ip route replace $own proto $(echo $best | cut -d: -f3) table $T_EXPORT
+  else
+    ip route flush table $T_EXPORT 2>/dev/null
+  fi
+  [ "$choice" = "$last" ] || { echo "halow-exit: $choice ($(echo $summary))"; last=$choice; }
+  echo "$choice |$summary | $(date -u +%T)" > /run/halow-exit/state.new && mv /run/halow-exit/state.new /run/halow-exit/state
+  sleep 3
+done

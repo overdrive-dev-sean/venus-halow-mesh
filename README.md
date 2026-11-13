@@ -112,6 +112,7 @@ gx/                         files that go in /data/halow on the GX
   service/halow-mesh/       daemontools service: mesh point
   service/halow-babel/      daemontools service: Babel on halow0
   service/halow-watch/     daemontools service: DNS fallback when the mesh is the only uplink
+  service/halow-exit/      daemontools service: uplink guard (tests each uplink, steers own traffic, gates the exit)
 ```
 
 ## Build and install
@@ -149,6 +150,7 @@ You need Docker on the build machine and root SSH access to the GX.
    sleep 30
    ln -s /data/halow/service/halow-babel /service/halow-babel
    ln -s /data/halow/service/halow-watch /service/halow-watch
+   ln -s /data/halow/service/halow-exit /service/halow-exit
    ```
 
 **Country is a compliance setting.** The Morse driver's built-in default is `AU` (915 to 928 MHz). `load.sh`
@@ -159,19 +161,48 @@ refuses to load without `HALOW_COUNTRY`.
 Babel runs on `halow0` only. It uses the same policy as the peer nodes on our mesh:
 
 - The GX announces its loopback address (`BABEL_ADDR`).
-- With `HALOW_EXIT=1`, it also announces its own default routes, each at a cost per uplink type: `eth0` 128,
-  `wifi0` 192, `ppp0` (LTE modem) 1024. Lower wins, so a mesh member uses LTE only when nothing else is left.
-  Mesh traffic is NATed out of any non-mesh interface.
+- With `HALOW_EXIT=1`, it also offers its best working uplink as an internet exit, at a cost per uplink type:
+  `eth0` 256, `wifi0` 512, `ppp0` (LTE modem) 4096. One good radio hop costs about 256. Lower wins, so a mesh
+  member uses LTE only when nothing else is left. Mesh traffic is NATed out of any non-mesh interface.
 - It accepts only member loopbacks (`LOOPBACK_PREFIX`, default `10.200.0.0/16`) and a default route from peers. Any other prefix is
   refused, so a peer cannot pull a LAN range or a cloud address onto the mesh with a more specific route.
   The prefixes are `LOOPBACK_PREFIX` and `NAT_NETS` in `halow.env`.
 - Routes learned from Babel go into the kernel at metric 900, so a unit's own uplink always beats a mesh route.
   A GX that loses its own uplink falls back to the mesh.
 
+### The uplink guard (`halow-exit`)
+
+Venus OS keeps one default route, on the first connected of Ethernet, Wi-Fi and modem, and never tests it. A cable
+into a router whose own internet is down still counts as connected. Measured: with the upstream router's WAN
+unplugged, the GX stayed on Ethernet with no internet while its Wi-Fi sat connected and unused. On a mesh that is
+worse than a dead link. If that router is a mesh member, the GX offers the member its own dead uplink back, and
+traffic loops between the two.
+
+`gx/service/halow-exit` tests every uplink and acts on the result:
+
+- **Probe.** Each uplink has its own routing table, so all of them are tested at the same time, whichever one
+  Venus OS prefers. The probe is a ping to `PROBE_TARGETS`, then a TCP connect for networks that drop ping. An
+  uplink is down after 3 failures in a row and up after 3 passes in a row. One that was down waits
+  `EXIT_HOLD_SECONDS` (20) before it is used again.
+- **Own traffic.** The cheapest healthy uplink's default route goes into table 220, which is looked up before
+  connman's default route. With no healthy uplink, the default route learned from Babel goes there, so the mesh
+  beats a dead cable. connman also pins each uplink's DNS servers to that uplink with host routes. The guard
+  re-points those while the uplink is down.
+- **Mesh exit.** The same route goes into table 210, and babeld announces only what is in that table. An uplink is
+  offered to the mesh only while it passes the probe.
+- **No probe crosses the mesh.** The GX refuses to forward mesh traffic to the probe targets. Without that, a
+  probe sent into a mesh member with a dead uplink comes back over the radio, leaves through the GX's other
+  uplink, and passes. So choose probe targets that nothing on the mesh needs. The defaults are `1.0.0.1` and
+  `8.8.4.4`. Every exit on a mesh should drop the same targets.
+- **Fail-safe.** When the service stops it removes its rules, tables and firewall entries. The GX then routes as
+  stock Venus OS and offers no exit.
+
+`cat /run/halow-exit/state` shows the current choice and each uplink's state.
+
 ## Check it
 
 ```
-svstat /service/halow-mesh /service/halow-babel /service/halow-watch
+svstat /service/halow-mesh /service/halow-babel /service/halow-watch /service/halow-exit
 iw phy $(cat /sys/class/net/halow0/phy80211/name) info | grep -A8 'interface modes'   # expect: mesh point
 iw dev halow0 station dump | grep -E 'Station|mesh plink'                             # expect: ESTAB
 LD_LIBRARY_PATH=/data/halow/lib /data/halow/bin/morse_cli -i halow0 version
@@ -204,6 +235,9 @@ What was tested, on one Cerbo GX and one peer, at bench range (about 1 m):
 | Dongle unplugged and plugged back in while running | mesh and Babel back 29 s after the replug, via `halow-watch` |
 | Reboot with no dongle, then dongle plugged in | clean boot; mesh up within about 30 s of plugging in |
 | Uplink returns, Wi-Fi then Ethernet | route, DNS and mesh switched back with no help; Ethernet preferred over Wi-Fi |
+| Upstream router's WAN unplugged, GX cabled to that router (a mesh member), GX Wi-Fi connected | guard moved the GX to Wi-Fi in about 20 s; the router came back online through the GX (10 of 10 pings); no loop |
+| That WAN plugged back in | GX back on Ethernet 24 s later; the router back on its own uplink |
+| Guard stopped | every rule, table and firewall entry removed; routing as stock |
 | Mesh pings with connman kept off the radio | 660 of 660 replies, worst 128 ms, no scans on `halow0` |
 | Mesh pings while connman managed the radio | 4-second stalls about every 14 s, up to 32% loss |
 
@@ -214,6 +248,8 @@ Not tested yet:
   refuses to load them and the GX runs on without HaLow, but this path has not been exercised. Rebuild for the new
   release.
 - **Ekrano GX and other GX models.** Only the Cerbo GX was tested. The build is armv7 only.
+- **The GX LTE modem (`ppp0`) as an uplink or exit.** The guard handles it by the same rules, with no modem on the bench.
+- **An uplink that drops ping and TCP 443 to the probe targets.** The guard treats it as down.
 - **More than two mesh members.**
 
 ## Power save

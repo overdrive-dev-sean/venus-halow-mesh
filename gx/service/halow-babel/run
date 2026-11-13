@@ -1,7 +1,7 @@
 #!/bin/sh
 # Babel routing over halow0 only, supervised by daemontools.
-# This GX announces its loopback address and, when HALOW_EXIT=1, its own default routes at a cost per uplink
-# type. Routes it learns go into the kernel at metric 900, so its own Ethernet, Wi-Fi or modem default wins.
+# This GX announces its loopback address and, when HALOW_EXIT=1, the uplink that halow-exit found healthy, at a
+# cost per uplink type. Routes it learns go into the kernel at metric 900, so its own Ethernet, Wi-Fi or modem default wins.
 exec 2>&1
 H=/data/halow
 [ -r $H/halow.env ] && . $H/halow.env
@@ -13,12 +13,14 @@ fi
 ip addr replace ${BABEL_ADDR:?set BABEL_ADDR in halow.env} dev lo
 set -- -I /run/halow-babel.pid -S $H/babel.state -g 33123 -k 900
 if [ "${HALOW_EXIT:-0}" = 1 ]; then
-  # Venus OS's connman (and pppd) install default routes as proto boot (3). babeld skips boot routes unless a
-  # filter names "proto 3", so each uplink gets a proto 3 line, plus a plain line for any other protocol.
-  for spec in "eth0 ${EXIT_METRIC_ETH:-128}" "wifi0 ${EXIT_METRIC_WIFI:-192}" "ppp0 ${EXIT_METRIC_MODEM:-1024}"; do
-    set -- "$@" -C "redistribute if ${spec% *} proto 3 ip 0.0.0.0/0 eq 0 metric ${spec#* }" \
-                -C "redistribute if ${spec% *} ip 0.0.0.0/0 eq 0 metric ${spec#* }"
-  done
+  # Exits come from table 210 only. halow-exit puts this GX's best uplink there while it passes the probe, with a
+  # route protocol number per uplink type, and babeld prices each protocol. Nothing is read from the main table,
+  # so an untested default route is never offered. (babeld also skips "proto boot" routes, which is what connman
+  # installs, so the main table's default would not be announced anyway.)
+  set -- "$@" -C "import-table 210" \
+              -C "redistribute proto 200 ip 0.0.0.0/0 eq 0 metric ${EXIT_METRIC_ETH:-256}" \
+              -C "redistribute proto 203 ip 0.0.0.0/0 eq 0 metric ${EXIT_METRIC_WIFI:-512}" \
+              -C "redistribute proto 202 ip 0.0.0.0/0 eq 0 metric ${EXIT_METRIC_MODEM:-4096}"
   # NAT mesh traffic out of any non-mesh interface (idempotent).
   for net in ${NAT_NETS:-10.100.0.0/16 10.200.0.0/16}; do
     iptables -t nat -C POSTROUTING -s $net ! -o halow0 -j MASQUERADE 2>/dev/null \
